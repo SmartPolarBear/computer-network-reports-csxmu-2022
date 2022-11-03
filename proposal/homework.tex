@@ -67,10 +67,10 @@
 
 %%%%%%%%%%%%%
 \newcommand{\StudentNumber}{22920202204622}  % Fill your student number here
-\newcommand{\StudentName}{熊恪峥}  % Replace your name here
-\newcommand{\PaperTitle}{基于xv6内核的网络协议栈实现和lwIP的IPv6功能补全}  % Change your paper title here
+\newcommand{\StudentName}{\textbf{熊恪峥}\ 肖凯欣\ 谢哲涵\ 赵淇奥}  % Replace your name here
+\newcommand{\PaperTitle}{基于xv6内核的网络子系统及Socket接口实现}  % Change your paper title here
 \newcommand{\PaperType}{开题报告} % Replace the type of your report here
-\newcommand{\Date}{2022年10月7日}
+\newcommand{\Date}{2022年10月17日}
 \newcommand{\College}{信息学院}
 \newcommand{\CourseName}{计算机网络与通信}
 %%%%%%%%%%%%%
@@ -239,13 +239,14 @@
 
 \section{选题介绍}
 
-由6.828 Lab 6\cite{kaashoek20066}得到的灵感，我们将为xv6内核实现一个网络协议栈以及Socket API。
+由6.828 Lab 6\cite{kaashoek20066}得到的灵感，我们将为xv6内核实现网络子系统以及Socket API。
 
 6.828课程中讲授xv6内核\cite{cox2011xv6}的实现，并在实验中要求学生在称之为JOS的实验性微内核
 操作系统中添加相应的功能。但事实上，xv6内核本身的结构和现代网络服务器中常常使用
 的Linux和FreeBSD更为类似。因此，我们好奇，我们是否可以对xv6内核进行修改，来添加
 对网络功能的支持，而不是在JOS上进行实现。这样，我们能够更好地通过实现相应的功能和
 适配相应的库来加深对各种网络协议以及Socket API本身的理解。
+
 
 \subsection{xv6简介}
 
@@ -264,7 +265,7 @@ lwIP最初是由Swedish Institute of Computer Science的Adam Dunkels开发，现
 
 \subsection{实现网络控制器驱动程序}
 
-为了为XV6实现网络功能，首先需要实现网络控制器的驱动程序。我们将在项目进行的过程中
+为了为xv6实现网络功能，首先需要实现网络控制器的驱动程序。我们将在项目进行的过程中
 依照难度和时间安排，选择以下两种方案之一：
 
 \begin{itemize}
@@ -277,11 +278,11 @@ lwIP最初是由Swedish Institute of Computer Science的Adam Dunkels开发，现
 
 \subsection{移植lwIP}
 
-6.828 Lab 6为JOS准备了lwIP的移植。而JOS与XV6虽然大致相似，但有一部分系统调用有明显的差异，并且采用了具有显著差异的进程模型。因此我们需要为XV6
+6.828 Lab 6为JOS准备了lwIP的移植。而JOS与xv6虽然大致相似，但有一部分系统调用有明显的差异，并且采用了具有显著差异的进程模型。因此我们需要为xv6
 进行lwIP的移植工作。
 
 lwIP提供了一个操作系统模拟层（Opereation System Emulation Layer），来为lwIP和操作系统内核的互操作提供良好的可移植性。
-为了把lwIP移植到XV6，我们只需要添加一个sys\_arch实现。该层包括对信号量（Semaphores）、信箱机制、互斥锁的支持，以及可选的对线程的支持。
+为了把lwIP移植到xv6，我们只需要添加一个sys\_arch实现。该层包括对信号量（Semaphores）、信箱机制、互斥锁的支持，以及可选的对线程的支持。
 所需要实现的函数如表~\ref{tbl:lwip}。
 
 \begin{table}[htb]
@@ -306,7 +307,7 @@ lwIP提供了一个操作系统模拟层（Opereation System Emulation Layer）�
 	\end{tabular}
 \end{table}
 
-其中自旋锁和信号量都可以基于XV6的spinlock自旋锁实现进行简单的实现。而信箱功能由于lwIP被用于内核态，因此在实现相应的数据结构的基础上可以在工作量适中的条件下完成。
+其中自旋锁和信号量都可以基于xv6的spinlock自旋锁实现进行简单的实现。而信箱功能由于lwIP被用于内核态，因此在实现相应的数据结构的基础上可以在工作量适中的条件下完成。
 
 \subsection{实现Socket接口}
 
@@ -318,7 +319,7 @@ lwIP提供了一个操作系统模拟层（Opereation System Emulation Layer）�
 	\item \textbf{用户库}： 在用户库(User Lib)实现DNS解析的支持
 \end{itemize}
 
-在这个过程中，鉴于lwIP假定运行在单线程的环境下，而XV6支持对称多处理器，因此需要恰当地对不应并行的操作加锁。并恰当地处理超时等问题。
+在这个过程中，鉴于lwIP假定运行在单线程的环境下，而xv6支持对称多处理器，因此需要恰当地对不应并行的操作加锁。并恰当地处理超时等问题。
 
 \subsection{实现网络应用程序}
 
@@ -365,12 +366,12 @@ TCP echo server的典型功能是将收到的数据原路发回给客户端。�
 现代Linux内核为了实现高性能的网络操作、避免过大的系统调用开销、防止轮询浪费CPU时间，实现了epoll。它采用
 事件驱动的模型，有效地解决了高并发下的性能问题。在连接数目增多时显现出了明显的性能优势。
 
-在客观条件允许的情况下，我们会为XV6内核实现这一机制，并评估其性能。
+在客观条件允许的情况下，我们会为xv6内核实现这一机制，并评估其性能。
 
 
 \section{外围工作}
 
-XV6源自Unix V6，它有较长的历史。它的代码中，一些实现较为原始，另一些实现则偏离了当前的软件工程上的最佳实践。
+xv6源自Unix V6，它有较长的历史。它的代码中，一些实现较为原始，另一些实现则偏离了当前的软件工程上的最佳实践。
 为了更好地完成本项目，一些辅助工作需要在主要任务之外完成。这些工作对网络子系统的运行效率和开发难度可能有显著的积极影响，
 但并非必须，因此我们会根据客观条件的限制来选择性地完成。由于我们具有相关经验，因此这些辅助工作的工作量和难度处在可控的范围内。
 这些辅助工作包括：
@@ -398,7 +399,7 @@ XV6源自Unix V6，它有较长的历史。它的代码中，一些实现较为�
 
 \section{性能基准测试}
 
-为了评估我们的网络子系统实现的性能，我们将会对其进行性能基准测试。具体而言，我们会对在JOS/XV6上实现了上述功能的开源项目以及我们的实现进行性能的对比测试。
+为了评估我们的网络子系统实现的性能，我们将会对其进行性能基准测试。具体而言，我们会对在JOS/xv6上实现了上述功能的开源项目以及我们的实现进行性能的对比测试。
 这将会包含以下内容：
 
 \begin{itemize}
