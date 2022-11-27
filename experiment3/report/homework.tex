@@ -248,7 +248,7 @@ backgroundcolor=\color{black!2},%
 
 \begin{spacing}{1.2}
 
-\section{任务1}
+\section{任务1、观察RIPv2的动态更新}
 
 \subsection{任务1.1}
 
@@ -309,7 +309,7 @@ AR5的\texttt{GE 0/0/0}端口的\texttt{192.168.4.0/32}网段。因此，AR3给A
 	\includegraphics[width=0.3\textwidth]{sh.png} 
 \end{figure}
 
-\section{任务2}
+\section{任务2、Split-Horizon对“坏消息传播的慢”的影响}
 
 水平分割可以防止产生回路，一定程度上缓解Count-to-infinity问题。但是，水平分割也会造成路由欺骗等问题。
 在eNSP中水平分割默认开启。使用shutdown命令关闭AR2的\texttt{GE 0/0/1}端口。此时该端口的绿色点变红，
@@ -426,7 +426,7 @@ AR5的\texttt{GE 0/0/0}端口的\texttt{192.168.4.0/32}网段。因此，AR3给A
 
 这说明了进行Split-horizion是对RIP协议的重要优化，可以提高效率并且避免产生问题。
 
-\section{任务3}
+\section{任务3、OSPF的动态更新}
 
 首先按照图~\ref{fig:riptopo}搭建网络。启动设备然后配置OSPF协议，链路上
 红点变为绿色，证明连通。
@@ -463,6 +463,7 @@ DB Description分组不包含完整的“链路状态数据库”信息，只包
 	\label{fig:lsreq}
 	\includegraphics[width=0.4\textwidth]{lsreq.png}
 \end{figure}
+
 可见AR3向AR4请求了\texttt{192.168.1.1}、\texttt{192.168.1.2}、
 \texttt{192.168.2.2}等路由器的信息。AR4收到请求后，会将这些信息发送给AR3。如图~\ref{fig:lsupdate}。
 \begin{figure}[htb]
@@ -471,6 +472,7 @@ DB Description分组不包含完整的“链路状态数据库”信息，只包
 	\label{fig:lsupdate}
 	\includegraphics[width=0.4\textwidth]{lsresp.png}
 \end{figure}
+
 AR3收到LS Update分组后，会将其中的LSA信息加入到自己的数据库中。然后发出确认分组
 LS Acknowledgement。如图~\ref{fig:lsack}。
 \begin{figure}[htb]
@@ -479,9 +481,10 @@ LS Acknowledgement。如图~\ref{fig:lsack}。
 	\label{fig:lsack}
 	\includegraphics[width=0.4\textwidth]{lsack.png}
 \end{figure}
+
 OSPF就像这样在相邻的路由器间交换信息。
 
-进入接口模式，将\texttt{192.168.1.1}-\texttt{192.168.1.2}的Cost改为6。
+进入接口模式，将\texttt{192.168.1.1}$\ \longleftrightarrow \ $\texttt{192.168.1.2}的Cost改为6。
 可见，AR1将会发出LS Update分组，将新的Cost信息发送给AR2。如图~\ref{fig:costchange}。
 \begin{figure}[htb]
 	\centering
