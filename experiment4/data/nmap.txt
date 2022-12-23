@@ -1,0 +1,13 @@
+Starting Nmap 7.80 ( https://nmap.org ) at 2022-12-01 17:44 CST
+Failed to resolve "sS".
+Nmap scan report for localhost (127.0.0.1)
+Host is up (0.000073s latency).
+Not shown: 995 closed ports
+PORT    STATE SERVICE
+21/tcp  open  ftp
+22/tcp  open  ssh
+80/tcp  open  http
+81/tcp  open  hosts2-ns
+631/tcp open  ipp
+
+Nmap done: 1 IP address (1 host up) scanned in 1.37 seconds
