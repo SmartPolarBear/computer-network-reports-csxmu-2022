@@ -412,13 +412,461 @@ struct pci_driver pci_attach_vendor[] = {
 \subsubsection{网卡的初始化}
 
 有了完善的PCI驱动程序，e1000网卡的初始化在操作上就是对相应寄存器地址的读写。方法是调用PCI驱动程序
-的\texttt{pciw}和\texttt{pcir}函数，分别用于写和读。
+的\texttt{pciw}和\texttt{pcir}函数，分别用于写和读。初始化大致分为以下几个步骤：
+
+\begin{enumerate}
+	\item 从PCI配置空间中读取网卡的基地址寄存器，得到网卡的基地址。
+	\item 从e1000的eeprom中读取MAC地址。
+	\item 设置多播表为全0。
+	\item 设置接受和发送的缓冲区等相关设置。
+\end{enumerate}
+
+由于本项目并没有要求大批数据的收发，只需要基本功能，因此e1000网卡工作在轮询模式下，不使用中断。
+e1000网卡的收、发分别使用64、16个物理内存页作为缓冲区，其中每两个Receive Descriptor和Transmission Descriptor
+共用一个缓冲区，因此每个缓冲区的大小是2KB。这样划分可以较好地保证缓冲区的对齐。
+
+驱动程序完成后，会在启动时输出网卡相关的硬件信息，如图~\ref{fig:initnet}所示。
+\begin{figure}[htb]
+	\centering
+	\caption{网卡的硬件信息}
+	\label{fig:initnet}
+	\includegraphics[width=0.5\textwidth]{inite1000.png}
+\end{figure}
+52:54:00:12:34:56是QEMU默认的虚拟网卡MAC地址，可见实现是正确的。
+
+\subsubsection{网卡的收发}
+
+从网卡收发数据是通过写相应的Read/Transmission Descriptor而实现的。默认情况下，这些Descriptor的Status
+字段为0，表示准备好接收或发送数据。当网卡收到数据时，会将数据写入相应的缓冲区，并将Status字段置为0，
+命令字段设置RS和EOP，表示数据已经正确写入，要求网卡回报状态。然后再在相应的寄存器中写入使用的Descriptor
+的编号。
+
+之后，驱动程序轮询网卡的状态寄存器，当网卡的状态寄存器中的RD和TD字段都为1时，表示数据已经正确接收或发送。
+其中发送部分的代码如代码~\ref{code:send}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption=数据发送,label={code:send}]
+int e1000_net_send(void *state, const void *data, int len)
+{
+	netdev_t *card = (netdev_t *)state;
+	e1000_t *e1000 = (e1000_t *)card->priv;
+	uint32 tail = pcir(e1000, E1000_TDT);
+	struct TD *next_desc = &e1000->tx_descs[tail];
+
+	if (!(next_desc->status & E1000_TXD_STAT_DD) && (next_desc->cmd & E1000_TXD_CMD_RS))
+	{
+		return -1;
+	}
+
+	if (len > PKTSIZE)
+	{
+		len = PKTSIZE;
+	}
+
+	memmove(e1000->tbuf[tail]->buf, data, len);
+	next_desc->length = len;
+	next_desc->status = 0;
+	next_desc->cmd = (E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP);
+
+	pciw(e1000, E1000_TDT, (tail + 1) % E1000_TXDESC_LEN);
+	while (!(next_desc->status & 0x0f))
+	{
+		microdelay(1);
+	}
+	return len;
+}
+\end{lstlisting}
+
 
 \section{基于LWIP的网络协议栈}
 
+由于网络协议栈的实现工作量巨大、相当复杂。我们采用了常用的LWIP作为协议栈。
+该协议栈实现了常见用的TCP/IP协议，如IP、TCP、UDP、ICMP、ARP、DHCP、DNS等。
+一方面，该协议栈较为轻量级，一方面，配置该库只需要在一头文件中定义相应的宏。
+因此我们选择了该实现。
+
+\subsection{LWIP的配置}
+
+LWIP的配置主要是在\texttt{lwipopts.h}中进行的。该文件中定义了各种宏，用于控制LWIP的功能。
+
+由于协议栈运行在内核态。因此在LWIP库的视角下，LWIP的代码工作在没有操作系统的模式下，因此，我们配置文件中
+主要的定义如代码~\ref{code:lwipopts}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption=LWIP配置,label={code:lwipopts}]
+#define NO_SYS 1
+
+#define LWIP_NETCONN 0
+#define LWIP_SOCKET 0
+
+#define LWIP_ARP 1
+#define LWIP_DHCP 1
+#define LWIP_DNS 1
+#define LWIP_ETHERNET 1
+#define LWIP_ICMP 1
+#define LWIP_RAW 1
+\end{lstlisting}
+首先，我们关闭了LWIP的socket和netconn接口，因为它们不能工作在无操作系统模式（NO\_SYS）下，因此，我们
+需要禁用这些功能，仅保留基础的功能，然后用基础的API实现我们的Socket等接口。
+
+我们启用了ARP、DHCP、DNS、Ethernet、ICMP和RAW协议。这些协议对于Socket API和POSIX NetDB API的实现
+是不可或缺的。
+
+\subsection{LWIP依赖函数的实现}
+
+NO\_SYS下的LWIP只依赖极少数的函数，这些函数主要是用于时间管理、和随机数生成。这些函数实现在\texttt{kernel/lib/lwip/os/}中的文件中。
+分别是sys\_now和lwip\_rand。由于LWIP仅利用时间戳进行时间差的计算，不用于任何时间戳的标注。因此可以直接反馈系统时钟中断中
+记录的Ticks。而随机数的生成，我们采用了的是简单的线性同余法。这种方法能使用位运算快速实现，有利于内核态代码的高效工作。
+随机数生成的代码如代码~\ref{code:lwip_rand}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption=LWIP随机数生成,label={code:lwip_rand}]
+unsigned long lwip_rand(void)
+{
+	uint32 time = sys_now();
+	static unsigned int z1 = 12345, z2 = 12345, z3 = 12345, z4 = 12345;
+	unsigned int b;
+	b  = ((z1 << 6) ^ z1) >> 13;
+	z1 = ((z1 & time) << 18) ^ b;
+	b  = ((z2 << 2) ^ z2) >> 27;
+	z2 = ((z2 & time) << 2) ^ b;
+	b  = ((z3 << 13) ^ z3) >> 21;
+	z3 = ((z3 & time) << 7) ^ b;
+	b  = ((z4 << 3) ^ z4) >> 12;
+	z4 = ((z4 & time) << 13) ^ b;
+	return (z1 ^ z2 ^ z3 ^ z4);
+}
+\end{lstlisting}
+
+
+\subsection{LWIP的初始化和工作循环}
+
+LWIP的主要工作都在\texttt{kernel/net/net.c}中完成。首先，在NO\_SYS模式下，要使用LWIP，需要用\texttt{netif->input}
+函数将数据传递到LWIP中。需要注意的是，LWIP不原生支持并发，而XV6支持对称多处理器。因此，为了防止LWIP内部的数据结构出现
+不一致的情况，我们对任何使用LWIP的上下文都使用同一自旋锁保护。这意味着只有一个进程能同时访问网络功能。
+这虽然一定程度上降低了效率，但是是不可或缺的。
+
+其次，为了驱动LWIP不断收取、分发、处理数据，需要不断调用\texttt{sys\_check\_timeouts}函数。因此，在xv6的IRQ0中断，即
+时钟中断中，我们调用该函数。这样，LWIP就能初步正常工作了。
+
+为了实现正常的收发数据，我们需要做好网卡驱动程序和LWIP的对接。在初始化时，我们为每一个网卡都创建一个\texttt{netif}结构体。
+然后在其中设置网卡的MAC地址、IP地址、子网掩码、网关地址、MTU等信息。最后，我们调用\texttt{netif\_add}函数将该网卡加入LWIP
+的网络接口列表中。这样，LWIP就能够使用该网卡了。
+
+但在收发数据前，首先，我们需要获取合适的IP地址，而非要求用户手动输入，这符合现代操作系统的实际。因此我们使用了DHCP协议。
+首先，调用LWIP的\texttt{dhcp\_start}函数，然后若未获取IP地址，就反复试图从网卡中读入数据并交给LWIP处理。这样，LWIP
+最终就能正确地设置网卡的IP地址了。这时，正在启动的操作系统内核会输出获取的IP地址等配置信息。
+这部分代码如代码\ref{lst:netadd}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption=网卡初始化,label={code:netadd}]
+void
+netadd(int n)
+{
+	struct netif *new = &netif[n];
+	netdev_t *card = find_card_by_id(n);
+
+	int i;
+	char addr[IPADDR_STRLEN_MAX], netmask[IPADDR_STRLEN_MAX], gw[IPADDR_STRLEN_MAX];
+
+	if (!netif_add_noaddr(new, (void *)card, linkinit, netif_input))
+	{
+		panic("netadd");
+	}
+
+	new->name[0] = 'e';
+	new->name[1] = 'n';
+
+	netif_set_link_up(new);
+	netif_set_up(new);
+
+	cprintf("net %d: mac ", n);
+	for (i = 0; i < ETH_HWADDR_LEN; ++i)
+	{
+		if (i)
+		{
+			cprintf(":");
+		}
+		if (new->hwaddr[i] < 0x10)
+		{
+			cprintf("0");
+		}
+		cprintf("%x", new->hwaddr[i]);
+	}
+	cprintf("\n");
+
+	if (!card->opts->open || card->opts->open(card))
+	{
+		panic("netadd: cannot open device\n");
+	}
+
+	dhcp_start(new);
+	/* wait until DHCP succeeds */
+	while (!dhcp_supplied_address(new))
+	{
+		linkinput(new);
+		sys_check_timeouts();
+	}
+
+	ipaddr_ntoa_r(netif_ip_addr4(new), addr, sizeof(addr));
+	ipaddr_ntoa_r(netif_ip_netmask4(new), netmask, sizeof(netmask));
+	ipaddr_ntoa_r(netif_ip_gw4(new), gw, sizeof(gw));
+	cprintf("net %d: addr %s netmask %s gw %s\n", n, addr, netmask, gw);
+
+}
+\end{lstlisting}
+
+在实际运行中，QEMU虚拟机下的xv6输出如图\ref{fig:netadd}所示。使用QEMU参数保存相应的
+数据包，如图\ref{fig:dhcppacks}所示。可见，一个正确的、典型的DHCP过程正常完成了。
+首先，没有配置好IP地址的网卡发送了一个DHCP Discover数据包，源地址是0.0.0.0。
+然后位于10.0.2.2的DHCP服务器以广播的方式返回了一个DHCP Offer数据包，这时，
+网卡继续以0.0.0.0作为源地址发送了一个DHCP Request数据包，请求DHCP服务器分配
+IP地址。最后，DHCP服务器返回了一个DHCP ACK数据包，这时，网卡就能正确地获取到
+IP地址、子网掩码和网关地址等重要信息。在此例中，分别为
+10.0.2.15、255.255.255.0和10.0.2.2。
+
+\begin{figure}[htb]
+	\centering
+	\caption{DHCP初始化}
+	\label{fig:http}
+	\begin{subfigure}{0.4\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{initproto.png}
+		\caption{DHCP获取的内容}
+		\label{fig:netadd}
+	\end{subfigure}
+	\begin{subfigure}{0.4\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{dhcppack.png}
+		\caption{收发的数据包}
+		\label{fig:dhcppacks}
+	\end{subfigure}
+\end{figure}
+
+由于时钟中断不断驱动LWIP进行工作，当DHCP初始化完后，网卡立即发送、接受ARP数据包，
+并且能够正常地进行网络通信。所捕捉的数据包如图\ref{fig:arppack}所示。
+\begin{figure}[htb]
+	\centering
+	\caption{ARP数据包}
+	\label{fig:arppack}
+	\includegraphics[width=0.8\textwidth]{arppack.png}
+\end{figure}
+此时，所有驱动程序和网络协议栈都可以正常地协同工作。为实现重要的用户编程接口
+打下了良好的基础。
+
 \section{Socket API}
 
+Socket API是一组用于网络编程的接口，它是POSIX标准的一部分。它提供了一组函数，
+来支持主要的用户程序间的通信功能，例如：
+\begin{itemize}
+	\item 设置和建立与其它网络中用户的连接；
+	\item 向其它网络中用户发送数据、从其它网络中用户接收数据；
+	\item 关闭连接、释放资源。
+\end{itemize}
+此外，它还能够提供一些高级的功能，例如：
+\begin{itemize}
+	\item 询问网络系统中的主机和状态；
+	\item 按照其他用户的的要求，执行系统功能和控制功能；
+\end{itemize}
+
+在我们的项目中，Socket API处于核心位置，是耗费了最长时间、完成了最多代码的部分。
+
+Internet Socket主要有三类：数据报套接字、流套接字和原始套接字。数据报套接字
+提供了无连接的Socket服务，主要用于UDP协议；流套接字提供了面向连接的Socket服务，
+常见的协议有TCP、SCTP等；原始套接字提供了对IP协议的完全访问，它允许用户构造任何
+类型的IP数据包，包括IP头部和数据部分。前两种对典型的网络应用程序来说十分重要，
+而原始套接字则是一种高级的功能，对我们在章节\ref{sec:netapp}中实现的网络应用程序nslookup、
+ping和traceroute来说也相当重要，因此我们需要恰当第实现这三类套接字。
+
+LWIP也提供了三种不同的API，分别为RAW IP API、RAW TCP API、RAW UDP API。它们提供了一层
+较为“薄”的封装，提供了构造这三种类型数据包的基础接口。我们将借助它们实现Socket API。
+
+注意到Socket类型和使用的协议不一定是一一对应的，例如，对于流套接字，
+用户可以使用TCP协议也可以使用STCP。这样一来，我们并不应该在实现中将
+利用不同协议的Socket实现耦合在一起，而应当进行逻辑上和实现上的分离，
+这样才能保证这一部分的可扩展性和可维护性。
+
+\subsection{架构设计}
+
+首先，我们将Socket的基本操作定义在结构体\texttt{sockopt}中，如代码
+\ref{lst:socketops}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption=sockopts结构体,label={code:socketops}]
+typedef struct sockopts
+{
+	struct
+	{
+		int type, protocol;
+	} meta;
+
+	int (*alloc)(struct socket *s);
+	int (*connect)(struct socket *s, struct sockaddr *addr, int addrlen);
+	int (*bind)(struct socket *s, struct sockaddr *addr, int addrlen);
+	int (*listen)(struct socket *s, int backlog);
+	int (*accept)(struct socket *s, struct socket *newsock, struct sockaddr *addr, int *addrlen);
+	int (*send)(struct socket *s, void *buf, int len, int flags);
+	int (*recv)(struct socket *s, void *buf, int len, int flags);
+	int (*sendto)(struct socket *s, void *buf, int len, int flags, struct sockaddr *addr, int addrlen);
+	int (*recvfrom)(struct socket *s, void *buf, int len, int flags, struct sockaddr *addr, int *addrlen);
+	int (*close)(struct socket *s);
+
+	int (*getsockopt)(struct socket *s, int level, int optname, void *optval, int *optlen);
+	int (*setsockopt)(struct socket *s, int level, int optname, void *optval, int optlen);
+} sockopts_t;
+\end{lstlisting}
+该结构体存储了一种针对特定“协议-Socket类型”二元组的Socket实现，它包含相应的元数据，以及一组函数指针。
+它们将指向具体的Socket实现，例如，对于TCP流套接字，它们将指向TCP流套接字的实现。
+
+每支持一种新的“协议-Socket类型”二元组，我们只需要实现相应的Socket实现，并将其注册到全局数组\texttt{sockopts}中，
+它定义在文件\texttt{kernel/net/socket.c}中，如代码\ref{lst:sockopts}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption=sockopts数组,label={code:sockopts}]
+sockopts_t *sockopts[] = {
+	&tcp_opts,
+	&udp_opts,
+	&raw_opts,
+};
+\end{lstlisting}
+它显示了我们支持的三种“协议-Socket类型”二元组，分别是TCP流套接字、UDP数据报套接字和原始套接字。
+
+每一个用户创建的Socket在内核中都会用一个\texttt{socket}结构体记录相应的参数，其中就有一个指针指向
+\texttt{sockopts}数组中的某一项，这个指针在创建Socket时通过遍历上述数组来确定，如果无法找到，
+就可以向用户汇报错误。\texttt{kernel/net/socket.c}中任何其他函数实现的主要部分都是根据该指针来调用相应的Socket实现。
+并不实际处理通信的过程，而是将这些过程交给具体的Socket实现来处理，它们位于\texttt{kernel/net/tcpsock.c}、
+\texttt{kernel/net/udpsock.c}、\texttt{kernel/net/rawsock.c}等具体的实现文件中。
+
+这样，就完美实现了具有高度可扩展性的Socket实现。实现了不同协议、不同类型Socket实现在逻辑上和代码构成上的分离。
+使得调试、维护、扩展都变得非常方便。
+
+上述\texttt{sockopt}结构体中包含了几乎全部的Socket API的定义，但不是所有具体的Socket实现都能够实现全部的API。
+对于那些不支持的操作，具体的实现只需要提供一个简单的、返回错误代码的函数实现即可。
+
+下面，我们以UDP协议的数据报套接字为例，来介绍一种我们已经支持的协议和类型的Socket API的具体实现。
+
+\subsection{Socket API实现（以UDP为例）}
+
+
+
+
+其它的Socket实现也是类似的，可参见源代码中的\texttt{kernel/net/tcpsock.c}、
+\texttt{kernel/net/udpsock.c}、\texttt{kernel/net/rawsock.c}
+等具体的实现文件，这里就不再赘述了。
+
 \section{POSIX NetDB API和DNS解析}
+
+为了实现网络应用程序的方便，仅有Socket API是不够的。因为在现实场景中，用户极少会
+指定IP进行操作，而是使用域名。因此，需要实现一个域名解析的功能，即DNS解析。
+
+现代类UNIX系统中，经常使用的接口是\texttt{getaddrinfo}和\texttt{getnameinfo}，
+然而这组API的实现比较复杂，功能比较多，不利于我们形成可以正常运行的系统。因此，我们选择
+实现较为传统的\texttt{gethostbyname}和
+\texttt{gethostbyaddr}接口。这两个接口虽然已经
+被POSIX标准弃用，但是实现简单、功能更为正交，因此更适合我们的实现。
+
+\subsection{架构设计}
+
+近年来，传统DNS解析的问题已经引发了广泛的关注。因此，新的DNS标准也正在普及，例如DNS over TLS、
+DNS over HTTPS等。这些新的标准都是为了解决DNS的安全性问题，已经被Windows、Linux等主流操作系统
+所支持。因此，考虑到未来的发展，我们的DNS实现的架构也应当具有可扩展性。
+
+另一个需要考虑的问题是，\texttt{gethostbyname}和\texttt{gethostbyaddr}的返回值是连续的内存块，
+其中变长内容由相对起始的偏移量表示，需要进行计算。因此，不把查询逻辑和构造返回值的逻辑分离开来，就会导致代码难以维护、
+难以扩展。
+
+因此，我们将DNS的基本操作抽象为一个\texttt{netdb\_proto}结构体，该结构体包含了DNS的基本操作，如代码~\ref{code:dnsop}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption={DNS操作结构体},label={code:dnsop},language=C]
+typedef struct netdb_proto
+{
+	void (*proto_init)();
+	int (*proto_query)(char *name, netdb_query_type_t type, netdb_answer_t **answer);
+	int (*proto_free_answer)(netdb_answer_t *answer);
+	int (*proto_dump_answer)(const netdb_answer_t *answer);
+	void (*proto_shutdown)();
+} netdb_proto_t;
+\end{lstlisting}
+其中，\texttt{proto\_init}用于初始化DNS操作，\texttt{proto\_query}用于查询，\texttt{proto\_free\_answer}用于释放查询结果，
+\texttt{proto\_dump\_answer}用于打印查询结果，\texttt{proto\_shutdown}用于操作系统内核关闭时的清理。
+
+为了分离构造返回值的逻辑，我们底层的DNS实现将DNS的查询结果构造成一个\texttt{netdb\_answer}结构体组成的链表，该结构体包含了DNS的查询结果，
+而系统调用的实现会进一步将该链表转换为合理的\texttt{hostent}返回值。
+
+这样，架构设计就能实现高度的可扩展性，同时达到了模块中高内聚、模块间低耦合的目的。
+
+\subsection{基本DNS查询的实现和测试}
+
+普通DNS使用明文传输、基于UDP协议。我们利用LWIP的UDP RAW API实现了DNS数据的传输。
+
+而构造DNS报文的过程则比较复杂，因为DNS将字符串部分进行了压缩，为了构造和解析DNS报文，
+需要实现相应的解析逻辑。RFC 1035中对DNS报文的格式进行了详细的描述：
+\begin{quote}
+	In order to reduce the size of messages, the domain system utilizes a
+compression scheme which eliminates the repetition of domain names in a
+message.  In this scheme, an entire domain name or a list of labels at
+the end of a domain name is replaced with a pointer to a prior occurance
+of the same name.
+\end{quote}
+简而言之，DNS报文中的字符串部分会被压缩，压缩的方式是将字符串部分的每个子串都用一个指针指向之前出现过的子串，
+高位的两位用于标识该指针是否指向字符串的开始，如果是，则该指针指向的是字符串的开始。代码~\ref{code:dnscompress}给出了字符串转化为正常字符串的实现。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption={字符串压缩解压缩},label={code:dnscompress},language=C]
+static inline char *parse_dns_name(char *dst, char *name, char *ans)
+{
+	char *p = name;
+	char *d = dst;
+	char *s = ans;
+	int len = 0;
+	int i = 0;
+	int offset = 0;
+	int first = 1;
+
+	while (*p != 0)
+	{
+		if ((*p & 0xc0) == 0xc0)
+		{
+			offset = (*p & 0x3f) << 8;
+			p++;
+			offset |= *p;
+			p = s + offset;
+			continue;
+		}
+
+		len = *p;
+		p++;
+
+		if (first)
+		{
+			first = 0;
+		}
+		else
+		{
+			*d = '.';
+			d++;
+		}
+
+		for (i = 0; i < len; i++)
+		{
+			*d = *p;
+			d++;
+			p++;
+		}
+	}
+
+	*d = 0;
+
+	return p + 1;
+}
+\end{lstlisting}
+然后，我们需要实现DNS报文的构造。该代码较长，因此我们将其放在了附录中，见\nameref{sec:appdixcode}
+中的代码~\ref{code:dnsquery}。
+接着，在LWIP UDP接收数据的回调函数中，我们实现了DNS回报的解析。这些部分大体就是对协议内容
+的简单实现。
+
+\texttt{proto\_query}的查询既要支持普通的DNS查询，也要支持从IP地址到域名的反向查询。但
+该功能不需要实现额外的功能，RFC 1035中定义了一种特殊的域，即\texttt{in-addr.arpa}，该域中的域名
+用于IP到域名的反向查询。因此，我们只需要将IP地址转化为\texttt{in-addr.arpa}域中的域名，然后进行
+正常的DNS查询，并取结果中的PTR记录即可。RFC中的相关描述如下：
+\begin{quote}
+	The Internet uses a special domain to support gateway location and
+	Internet address to host mapping.  Other classes may employ a similar
+	strategy in other domains.  The intent of this domain is to provide a
+	guaranteed method to perform host address to host name mapping, and to
+	facilitate queries to locate all gateways on a particular network in the
+	Internet.
+\end{quote}
+由于本函数实现过长，故不在报告中完整呈现，请参见源代码中\texttt{kernel/net/baredns.c}
+中的相关内容。
+
+基本DNS功能的测试依赖于用户应用程序\texttt{nslookup}的实现，具体数据和内容见应用程序章节的~\nameref{sec:nslookup}小节。
+该API连通此命令一同测试，能够正常工作。
 
 \section{内核改进}
 
@@ -605,8 +1053,10 @@ fileclose(struct file *f)
 
 
 \section{应用程序}
+\label{sec:netapp}
 
 \subsection{nslookup}
+\label{sec:nslookup}
 
 \subsubsection{程序介绍}
 
@@ -900,7 +1350,6 @@ main(int argc, char *argv[])
 
 \section{谢哲涵}
 
-
 在项目中我负责编写httpget程序。在计算机网络的实验课中，我们对使用HTTP连接获取互联网上的内容有了初步的理解和认识
 ，而在实现这个命令过程中我对于计算机网络编程，应用层协议有了更加深刻的认识。
 
@@ -909,6 +1358,96 @@ main(int argc, char *argv[])
 
 \bibliographystyle{unsrt}
 \bibliography{reference}
+
+\clearpage
+\section*{附录：代码清单}
+\addcontentsline{toc}{part}{附录：代码清单}
+\label{sec:appdixcode}
+
+\begin{lstlisting}[numbers=left,style=CppStyle,caption={DNS报文构造},label={code:dnsquery}]
+static inline struct netdb_answer *make_query(char *name, int type)
+{
+	assert_holding(&netdb_lock);
+
+	char *p = netdb_qbuf + 2048;
+
+	dns_header_t *header = (dns_header_t *)p;
+	header->xid = byteswap16(0x1204); // should be random though
+	header->flags = byteswap16(0x0100); // Q, RD
+	header->qdcount = byteswap16(1); // 1 question
+
+	p += sizeof(dns_header_t);
+	dns_question_t *question = (dns_question_t *)p;
+	question->dnstype = byteswap16(type); // A or PTR
+	question->dnsclass = byteswap16(1); // IN
+
+	p += sizeof(dns_question_t);
+	question->name = p;
+
+	const uint8 hostlen = (uint8)strlen(name);
+	memmove(question->name + 1, name, hostlen + 1);
+
+	uint8 *prev = (uint8 *)question->name;
+	uint8 count = 0;
+
+	for (uint8 i = 0; i < hostlen; i++)
+	{
+		if (name[i] == '.')
+		{
+			*prev = count;
+			prev = (uint8 *)(question->name + i + 1);
+			count = 0;
+		}
+		else
+		{
+			count++;
+		}
+	}
+	*prev = count;
+
+	p = netdb_qbuf;
+	size_t packet_len = sizeof(dns_header_t) + sizeof(dns_question_t) - sizeof(char *) + hostlen + 2;
+
+	memmove(p, header, sizeof(dns_header_t));
+	p += sizeof(dns_header_t);
+
+	memmove(p, question->name, hostlen + 1);
+	p += hostlen + 2;
+
+	memmove(p, &question->dnstype, sizeof(question->dnstype));
+	p += sizeof(question->dnstype);
+	memmove(p, &question->dnsclass, sizeof(question->dnsclass));
+
+	netbegin_op();
+	struct pbuf *pbuf = pbuf_alloc(PBUF_TRANSPORT, packet_len, PBUF_RAM);
+	if (!pbuf)
+	{
+		netend_op();
+		return NULL;
+	}
+	memmove(pbuf->payload, netdb_qbuf, packet_len);
+	query_ans = NULL;
+	udp_recv(dns_pcb, netdb_dns_recv, NULL);
+	err_t err = udp_send(dns_pcb, pbuf);
+
+	if (err != ERR_OK)
+	{
+		netend_op();
+		pbuf_free(pbuf);
+		return NULL;
+	}
+	netend_op();
+
+	if (!query_ans)
+	{
+		if (sleepddl(&dns_pcb, &netdb_lock, DNS_TIMEOUT) == 0)
+		{
+			return NULL;
+		}
+	}
+	return query_ans;
+}
+\end{lstlisting}
 
 
 \end{spacing}
