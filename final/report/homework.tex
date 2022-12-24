@@ -370,7 +370,7 @@ RFC 867日期时间服务客户端。
 
 \subsection{PCI总线的驱动}
 
-通用串行总线（PCI）是一种用于确保高性能、低开销的传输的本地总线。PCI总线的组件和卡片接口时处理器无关的，
+通用串行总线（PCI）\cite{specification2020review}是一种用于确保高性能、低开销的传输的本地总线。PCI总线的组件和卡片接口时处理器无关的，
 因此该总线结构可以被多种处理器架构利用。
 
 为了初始化PCI总线，需要驱动程序访问PCI配置空间，从而获取PCI设备的基本信息，例如设备的ID、设备的基地址等。
@@ -479,7 +479,7 @@ int e1000_net_send(void *state, const void *data, int len)
 \section{基于LWIP的网络协议栈}
 
 由于网络协议栈的实现工作量巨大、相当复杂。我们采用了常用的LWIP作为协议栈。
-该协议栈实现了常见用的TCP/IP协议，如IP、TCP、UDP、ICMP、ARP、DHCP、DNS等。
+该协议栈实现了常见用的TCP/IP协议，如IP、TCP\cite{postel1981transmission}、UDP\cite{postel1980user}、ICMP、ARP、DHCP、DNS等。
 一方面，该协议栈较为轻量级，一方面，配置该库只需要在一头文件中定义相应的宏。
 因此我们选择了该实现。
 
@@ -869,7 +869,7 @@ static inline void lwip_udp_recv_callback(void *arg, struct udp_pcb *pcb, struct
 \section{POSIX NetDB API和DNS解析}
 
 为了实现网络应用程序的方便，仅有Socket API是不够的。因为在现实场景中，用户极少会
-指定IP进行操作，而是使用域名。因此，需要实现一个域名解析的功能，即DNS解析。
+指定IP进行操作，而是使用域名。因此，需要实现一个域名解析的功能，即DNS解析\cite{mockapetris1987rfc1035}。
 
 现代类UNIX系统中，经常使用的接口是\texttt{getaddrinfo}和\texttt{getnameinfo}，
 然而这组API的实现比较复杂，功能比较多，不利于我们形成可以正常运行的系统。因此，我们选择
@@ -879,8 +879,8 @@ static inline void lwip_udp_recv_callback(void *arg, struct udp_pcb *pcb, struct
 
 \subsection{架构设计}
 
-近年来，传统DNS解析的问题已经引发了广泛的关注。因此，新的DNS标准也正在普及，例如DNS over TLS、
-DNS over HTTPS等。这些新的标准都是为了解决DNS的安全性问题，已经被Windows、Linux等主流操作系统
+近年来，传统DNS解析的问题已经引发了广泛的关注。因此，新的DNS标准也正在普及，例如DNS over TLS\cite{hu2016specification}、
+DNS over HTTPS\cite{hoffman2018dns}等。这些新的标准都是为了解决DNS的安全性问题，已经被Windows、Linux等主流操作系统
 所支持。因此，考虑到未来的发展，我们的DNS实现的架构也应当具有可扩展性。
 
 另一个需要考虑的问题是，\texttt{gethostbyname}和\texttt{gethostbyaddr}的返回值是连续的内存块，
@@ -1006,7 +1006,7 @@ static inline char *parse_dns_name(char *dst, char *name, char *ans)
 然而，在网络驱动程序、网络协议栈、Socket API等部分，需要频繁地进行内存分配，而且分配的内存大小不固定、分配的大小常常远小于
 4KB。为了避免耗尽内存，提高内存分配的效率。需要改进内存分配的方式。
 
-常见的类UNIX操作系统，例如Linux有更加复杂的内存分配机制。例如Buddy/Slab分配器，可以分配任意大小的内存块。其中Buddy分配器
+常见的类UNIX操作系统，例如Linux有更加复杂的内存分配机制。例如Buddy\cite{peterson1977buddy}/Slab\cite{bonwick1994slab}分配器，可以分配任意大小的内存块。其中Buddy分配器
 分配2幂次大小的内存块，而Slab分配任意指定大小的内存块。这种分配方式的优点是可以分配任意大小的内存块，然而完整的实现相当复杂，
 不利于我们按期完成项目。因此，我们采用了一种简单的内存分配方式，即利用xv6现有的分配器分配页大小的内存。然后使用Slab分配器
 分配任意大小的内存块。具体的实现在\texttt{kernel/slab.c}中。
@@ -1404,7 +1404,7 @@ ping首先通过\texttt{gethostbyname}函数获取\texttt{www.baidu.com}的IP地
 
 \subsection{httpget}
 
-httpget程序是wget的简化版，它向指定的服务器发送HTTP GET请求，获取服务器返回的数据，
+httpget程序是wget的简化版，它向指定的服务器发送HTTP GET\cite{berners1996rfc1945}请求，获取服务器返回的数据，
 然后将数据打印到标准输出。该程序的主要过程如下：
 \begin{enumerate}
 	\item 通过\texttt{gethostbyname}函数获取服务器的IP地址
@@ -1536,7 +1536,7 @@ int main(int argc, char **argv)
 
 \subsection{RFC 867授时服务客户端daytime}
 
-Daytime Protocol是1983年由RFC 867定义的，用于授时服务，客户端通过TCP连接或者到服务器，服务器
+Daytime Protocol是1983年由RFC 867\cite{postel1983rfc0867}定义的，用于授时服务，客户端通过TCP连接或者到服务器，服务器
 使用的端口号是13，服务器返回一个ASCII字符串，表示当前的时间，格式为：\texttt{Day Mon dd hh:mm:ss yyyy}
 
 为了测试与远程服务器的连接，我们可以使用这个协议，客户端的代码如代码~\ref{code:datetime}所示。
