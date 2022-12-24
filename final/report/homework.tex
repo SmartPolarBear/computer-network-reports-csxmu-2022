@@ -1404,6 +1404,136 @@ ping首先通过\texttt{gethostbyname}函数获取\texttt{www.baidu.com}的IP地
 
 \subsection{httpget}
 
+httpget程序是wget的简化版，它向指定的服务器发送HTTP GET请求，获取服务器返回的数据，
+然后将数据打印到标准输出。该程序的主要过程如下：
+\begin{enumerate}
+	\item 通过\texttt{gethostbyname}函数获取服务器的IP地址
+	\item 通过\texttt{socket}函数创建套接字
+	\item 通过\texttt{connect}函数连接服务器
+	\item 通过\texttt{write}函数发送HTTP GET请求
+	\item 通过\texttt{read}函数读取服务器返回的数据
+	\item 将数据打印在标准输出流中。
+\end{enumerate}
+它的实现如代码~\ref{code:httpget}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption={httpget实现},label={code:httpget}]
+#include <user.h>
+#include <netdb.h>
+#include <socket.h>
+#include <inet.h>
+
+char host[64], buf[512];
+
+int main(int argc, char **argv)
+{
+	const char *url, *path;
+	ssize_t i, n;
+	struct hostent *hp;
+	int sockfd, r;
+	struct sockaddr_in addr = {
+		.sin_family = PF_INET, .sin_port = htons(80),
+	};
+
+	if (argc < 2)
+	{
+		printf(2, "usage: httpget url\n");
+		return 0;
+	}
+	url = argv[1];
+
+	path = strchr(url, '/');
+	if (path)
+	{
+		memmove(host, url, path - url);
+		host[path - url] = 0;
+	}
+	else
+	{
+		strcpy(host, url);
+		path = "/";
+	}
+
+	printf(1, "host: %s, path: %s\n", host, path);
+	hp = (struct hostent *)gethostbyname(host);
+	//assert(hp, "gethostbyname");
+	addr.sin_addr.s_addr = *(uint32_t *)hp->h_addr_list[0];
+	printf(1, "* Trying %s (%s)\n", hp->h_name, inet_ntoa(*(struct in_addr *)&addr.sin_addr));
+
+	sockfd = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+	//assert(sockfd >= 0, "socket");
+
+	r = connect(sockfd, (const struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+	//assert(r == 0, "connect");
+
+	/* send http request */
+	snprintf(buf, sizeof(buf), "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: curl\r\n\r\n", path, host);
+	for (i = 0, n = strlen(buf); i < n;)
+	{
+		r = send(sockfd, buf + i, n - i);
+		//assert(r > 0, "send");
+		i += r;
+	}
+	write(1, buf, n);
+
+	/* print http response */
+	while (1)
+	{
+		n = recv(sockfd, buf, sizeof(buf));
+		if (n <= 0)
+		{
+			break;
+		}
+		write(1, buf, n);
+	}
+
+	close(sockfd);
+	return 0;
+}
+\end{lstlisting}
+
+我们运行命令\texttt{httpget mba.xmu.edu.cn/favicon.ico}，可以看到服务器返回的数据，如图~\ref{fig:favicon}所示。
+由于请求的文件是二进制文件，因此打印出的内容不可读，但所返回的HTTP头部信息是可读的。可以发现我们的实现是正确的。
+另外，使用命令\texttt{httpget www.kernel.org/doc/Documentation/x86/x86\_64/mm.txt}，
+可以看到服务器返回的数据，如图~\ref{fig:mmtxt}所示。由于该文件一般不可访问，因此服务器返回了一个HTML页面，
+其中包含了301错误信息。可见，我们的实现能够正确完成HTTP请求。
+\begin{figure}[htb]
+	\centering
+	\caption{httpget命令}
+	\label{fig:httpget}
+	\begin{subfigure}{0.4\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{httpget1.png}
+		\caption{favicon.ico}
+		\label{fig:favicon}
+	\end{subfigure}
+	\begin{subfigure}{0.4\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{httpget2.png}
+		\caption{mm.txt}
+		\label{fig:mmtxt}
+	\end{subfigure}
+\end{figure}
+
+其中通信过程中产生的数据如图~\ref{fig:httpgetpacket}所示。它符合典型的HTTP
+1.0协议的通信过程，如图~\ref{fig:httpgetprocess}；
+经过仔细检查，协议头中的各个参数都进行了正确设置。如图~\ref{fig:httpgetheader}所示。
+\begin{figure}[htb]
+	\centering
+	\caption{httpget命令产生的数据包}
+	\label{fig:httpgetpacket}
+	\begin{subfigure}{0.4\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{httpgetpack.png}
+		\caption{通信过程}
+		\label{fig:httpgetprocess}
+	\end{subfigure}
+	\begin{subfigure}{0.4\textwidth}
+		\centering
+		\includegraphics[width=\textwidth]{httpheader.png}
+		\caption{发送的HTTP头部}
+		\label{fig:httpgetheader}
+	\end{subfigure}
+\end{figure}
+
 \subsection{RFC 867授时服务客户端daytime}
 
 Daytime Protocol是1983年由RFC 867定义的，用于授时服务，客户端通过TCP连接或者到服务器，服务器
@@ -1568,6 +1698,24 @@ main(int argc, char *argv[])
 
 
 \chapter{项目管理}
+
+\section{开发模式}
+
+由于该项目规模较大、代码量高、开发周期短。因此，我们必须采用更有效的方式
+管理项目的的源代码，进行源代码版本控制，防止某次更改导致大规模的错误。
+此外，为了有效合并四个人合作的代码，我们也需要采用更有效的方式进行代码合并、
+代码冲突的解决等。因此，我们采用了Git作为项目的源代码管理工具。
+
+使用Git进行项目合作的流程如图~\ref{fig:gitflow}所示。
+\begin{figure}[htb]
+	\centering
+	\caption{Git工作流程}
+	\label{fig:gitflow}
+	\includegraphics[width=0.8\textwidth]{git.png}
+\end{figure}
+
+\section{项目数据}
+ 
 
 \chapter{项目感想}
 
