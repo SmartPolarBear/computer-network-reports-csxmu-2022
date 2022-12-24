@@ -735,12 +735,136 @@ sockopts_t *sockopts[] = {
 
 \subsection{Socket API实现（以UDP为例）}
 
+UDP协议的套接字是数据报套接字，它的Socket实现定义在文件\texttt{kernel/net/udpsock.c}中。
+
+首先，数据报Socket有一些操作不能执行，比如\texttt{listen}、\texttt{accept}、\texttt{connect}等操作，
+根据上述分析，我们只需要在\texttt{udpsock.c}中提供一个简单的、返回错误代码的函数实现即可。
+例如，\texttt{connect}操作的实现如代码~\ref{code:udpconnect}所示，它只是简单地返回一个错误代码。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption=UDP的\texttt{connect}实现,label={code:udpconnect}]
+int udpconnect(struct socket *s, struct sockaddr *addr, int addrlen)
+{
+	return -EPROTONOSUPPORT;
+}
+\end{lstlisting}
+按照POSIX标准，失败的操作返回-1，然后设置全局的\texttt{errno}变量。因此，我们在这里返回的是详细的错误代码，
+而系统调用的实现函数会据此设置\texttt{errno}变量，然后返回-1。例如，\texttt{connect}系统调用的实现如代码~\ref{code:sysconnect}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption=\texttt{connect}系统调用实现,label={code:sysconnect}]
+int
+sys_connect(void)
+{
+	struct file *f;
+	int addrlen;
+	struct sockaddr *addr;
+
+	if (argfd(0, NULL, &f) < 0 || argint(2, &addrlen) < 0 || argptr(1, (void *)&addr, addrlen) < 0)
+	{
+		return -1;
+	}
+	if (f->type != FD_SOCKET)
+	{
+		seterror(-ENOTSOCK);
+		return -1;
+	}
+	int err = socketconnect(f->socket, addr, addrlen);
+	if (err < 0)
+	{
+		seterror(err);
+		return -1;
+	}
+	return 0;
+}
+\end{lstlisting}
+
+而对于那些可以执行的操作，我们需要提供一个具体的实现。这些实现会借助相应的LWIP协议栈的API来完成。
+以UDP的\texttt{recvfrom}操作为例。为了实现该接口，有一些协议无关的操作和一些协议相关的操作。
+协议无关的操作包括：
+\begin{enumerate}
+	\item 检查参数的合法性；
+	\item 在调用之后、确实收到数据之前，将当前进程阻塞；
+	\item 从LWIP的\texttt{pbuf}缓冲区中拷贝数据到用户空间；
+\end{enumerate}
+协议相关的操作包括：
+\begin{enumerate}
+	\item 为LWIP的UDP协议栈设置相关参数；
+	\item 实现LWIP的接收回调函数；
+\end{enumerate}
+为了实现以上的操作，我们进行了如下的设计考量：
+\begin{itemize}
+	\item 由于网络操作等待时间较长，不应该进行循环式的“忙等”，因此应当将进程设为睡眠；
+	\item 等待时间不能无限延长，同时Socket API也支持设置超时参数，因此应当处理超时；
+	\item LWIP允许为所有事件设置一个处理函数，或者为特定的事件设置单独的回调函数。为了隔离不同的逻辑，我们选择后者；
+\end{itemize}
+
+协议相关的操作由UDP的Socket实现完成，代码如代码~\ref{code:udpsockrecvfrom}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption=UDP Socket实现,label={code:udpsockrecvfrom}]
+int udprecvfrom(struct socket *s, void *buf, int len, int flags, struct sockaddr *addr, int *addrlen)
+{
+	struct udp_pcb *pcb = (struct udp_pcb *)s->pcb;
+	if (!pcb)
+	{
+		return -ECONNRESET;
+	}
+
+	netbegin_op();
+	udp_recv(pcb, lwip_udp_recv_callback, s);
+	netend_op();
+
+	return 0;
+}
+\end{lstlisting}
+
+而上述的协议无关的操作则由Socket API的顶层封装完成，代码如代码~\ref{code:sockrecvfrom}所示。
+该段代码较长，我们将其放在\nameref{sec:appdixcode}中。
+
+可见，该函数首先检查了参数，然后调用\texttt{skt->opts->recvfrom}，对于一个UDP Socket,
+该函数指针指向了UDP Socket的操作函数。该函数会调用\texttt{udp\_recv}注册回调函数，
+并将Socket作为参数传递给回调函数。然后将当前进程置于休眠状态。
+
+在回调函数中，会将接收到的数据包保存到Socket的接收缓冲区中，然后唤醒等待的进程。如
+代码~\ref{code:lwipudprecv}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption={LWIP的接受回调},label={code:lwipudprecv}]
+static inline void lwip_udp_recv_callback(void *arg, struct udp_pcb *pcb, struct pbuf *p,
+										  const ip_addr_t *addr, u16_t port)
+{
+	socket_t *socket = (socket_t *)arg;
+	socket->recvfrom_params.recv_addr.sin_addr.addr = addr->addr;
+	socket->recvfrom_params.recv_addr.sin_port = port;
+	socket->recvfrom_params.recv_addr.sin_family = AF_INET;
+
+	if (!p || p->tot_len > socket->recvfrom_params.recv_len)
+	{
+		if (p)
+		{
+			netbegin_op();
+			pbuf_free(p);
+			netend_op();
+		}
+		socket->recv_closed = TRUE;
+		return;
+	}
+	// buffer hasn't been received
+	if (socket->recv_buf)
+	{
+		return;
+	}
+
+	socket->recv_buf = p;
+	socket->recv_offset = 0;
+
+	socket->wakeup_retcode = 0;
+	wakeup(&socket->recv_chan);
+}
+\end{lstlisting}
 
 
+这样，可以灵活扩展的Socket \texttt{recvfrom}就实现了。其它的操作实现也类似。
+其中，带休眠时间限制的休眠函数\texttt{sleepddl}可参见章节\ref{sec:kernel}
+中的相关介绍。
 
-其它的Socket实现也是类似的，可参见源代码中的\texttt{kernel/net/tcpsock.c}、
+其它协议Socket实现也是类似的，可参见源代码中的\texttt{kernel/net/tcpsock.c}、
 \texttt{kernel/net/udpsock.c}、\texttt{kernel/net/rawsock.c}
-等具体的实现文件，这里就不再赘述了。
+等具体的实现文件，这里就不再赘述了。所有Socket API的测试都是与TCP/UDP Echo Server
+配合完成的，可参见章节~\ref{sec:netapp}。
 
 \section{POSIX NetDB API和DNS解析}
 
@@ -869,6 +993,7 @@ static inline char *parse_dns_name(char *dst, char *name, char *ans)
 该API连通此命令一同测试，能够正常工作。
 
 \section{内核改进}
+\label{sec:kernel}
 
 \subsection{内存分配改进}
 
@@ -1006,6 +1131,53 @@ fileclose(struct file *f)
 在这段代码中，遇到Socket类型的文件节点时，调用了\texttt{socketclose}函数
 实现Socket专属的关闭逻辑。
 
+\subsection{进程管理改进}
+
+本项目中对进程管理的改进主要包含对信号的支持和对可设置超时时间的进程休眠的支持。
+对信号的支持主要是便于调试。并且实现复杂、代码较长。因此在报告中不做叙述。可参见源代码中的
+\texttt{kernel/proc.c}。这里主要介绍对可设置超时时间的进程休眠的支持。
+该函数的实现在\texttt{kernel/proc.c}中，如代码~\ref{code:sleepddl}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption={\texttt{sleepddl}的实现},label={code:sleepddl},language=C]
+
+uint sleepddl(void *chan, struct spinlock *lk, uint duration)
+{
+	if (duration == 0)
+	{
+		sleep(chan, lk);
+		return 0xffffffff;
+	}
+
+	myproc()->sleep.deadline = duration * tickspersecond;
+	sleep(chan, lk);
+	int ret = myproc()->sleep.deadline;
+	myproc()->sleep.deadline = 0;
+	return ret;
+}
+\end{lstlisting}
+
+它与xv6原有的\texttt{sleep}函数非常相似，唯一区别在于，它可以设置一个超时时间。
+在唤醒之后，会将剩余的时间返回。如果没有超时，返回十六进制值\texttt{0xffffffff}。
+
+为了对唤醒时间进行计数，在xv6的调度器实现中，每当下一个时间片到来时，会遍历所有进程，
+如果某进程使用了带超时时间的休眠，就将其剩余时间减一。如果剩余时间为零，就设置该进程为
+可运行的进程。在不久的将来，该进程就会被调度、继续执行。
+
+该代码片段如代码~\ref{code:tick}所示。
+\begin{lstlisting}[numbers=left,style=CppStyle,caption={定时唤醒的实现},label={code:tick},language=C]
+	if (p->state == SLEEPING && p->sleep.deadline > 0)
+	{
+		p->sleep.deadline--;
+		if (p->sleep.deadline == 0)
+		{
+			p->state = RUNNABLE;
+		}
+	}
+\end{lstlisting} 
+
+该功能对Socket API的实现非常有用。在Socket API中，我们常常需要为休眠设置一个超时时间，
+来避免进程因为等待数据而无限期地休眠。
+
+
 \subsection{常用数据结构实现}
 
 设备驱动程序、DNS的查询过程中，我们需要一些能够动态地插入和删除元素的数据结构。
@@ -1110,6 +1282,30 @@ server */
 	\item 对于获取的hostent结构体，使用用户友好的形式输出显示。
 \end{enumerate}
 
+具体的运行效果如图~\ref{fig:nslookup}所示。
+\begin{figure}[htb]
+	\centering
+	\caption{nslookup运行效果}
+	\label{fig:nslookup}
+	\includegraphics[width=0.8\textwidth]{nslookup.png}
+\end{figure}
+首先，对域名\texttt{cn.bing.com}进行查询，程序输出了该域名的所有IP地址，以及该域名的
+的所有别名。然后，对IP地址\texttt{8.8.8.8}反向查询域名。该IP是谷歌的DNS服务器，程序
+返回的域名为\texttt{dns.google}。可见，该程序是正确的。这其中产生的包如图~\ref{fig:nslookuppacket}所示。
+\begin{figure}[htb]
+	\centering
+	\caption{nslookup产生的包}
+	\label{fig:nslookuppacket}
+	\includegraphics[width=0.8\textwidth]{nslookuppack.png}
+\end{figure}
+经过检查，以上程序的输出符合对应包的内容。尤其是DNS的回复，如图~\ref{fig:nslookuprep}，
+可以发现根据DNS规则进行了比较多的压缩，然而我们的程序依然正常地还原了域名。
+\begin{figure}[htb]
+	\centering
+	\caption{nslookup过程的回复}
+	\label{fig:nslookuprep}
+	\includegraphics[width=0.4\textwidth]{nslookupresppack.png}
+\end{figure}
 
 \subsection{ping和traceroute}
 
@@ -1189,12 +1385,29 @@ setsockopt(sRaw,SOL_SOCKET,SO_RCVTIMEO,(char *)&timeout,sizeof(struct timeval));
 	setsockopt(sRaw, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl))
 \end{lstlisting}
 
+完成实现后，我们在xv6中运行ping，输出如图~\ref{fig:ping}所示。
+\begin{figure}[htb]
+	\centering
+	\caption{ping输出}
+	\label{fig:ping}
+	\includegraphics[width=0.6\textwidth]{ping.png}
+\end{figure}
+ping首先通过\texttt{gethostbyname}函数获取\texttt{www.baidu.com}的IP地址，
+然后发送ICMP消息进行测试，并输出了四次结果。产生的报文如图~\ref{fig:pingpacket}所示。
+\begin{figure}[htb]
+	\centering
+	\caption{ping产生的报文}
+	\label{fig:pingpacket}
+	\includegraphics[width=0.6\textwidth]{pingpack.png}
+\end{figure}
+可见该过程是正常的。
+
 \subsection{httpget}
 
 \subsection{RFC 867授时服务客户端daytime}
 
 Daytime Protocol是1983年由RFC 867定义的，用于授时服务，客户端通过TCP连接或者到服务器，服务器
-使用的端口号是13，服务器返回一个ASCII字符串，表示当前的时间，格式为：$Day Mon dd hh:mm:ss yyyy$
+使用的端口号是13，服务器返回一个ASCII字符串，表示当前的时间，格式为：\texttt{Day Mon dd hh:mm:ss yyyy}
 
 为了测试与远程服务器的连接，我们可以使用这个协议，客户端的代码如代码~\ref{code:datetime}所示。
 该实现使用Socket编程，使用了TCP连接，连接到服务器后，发送一个空的数据包，服务器会返回一个32位的整数，表示从1900年1月1日到现在的秒数，
@@ -1239,6 +1452,24 @@ end:
 	return 0;
 }
 \end{lstlisting}
+
+该实现建立了一个TCP连接，连接到服务器后，发送一个空的数据包，服务器会返回一个
+表示当前日期时间的ASCII字符串，客户端将其输出到标准输出。效果如图~\ref{fig:daytime}所示。
+\begin{figure}[htb]
+	\centering
+	\caption{daytime客户端输出}
+	\label{fig:daytime}
+	\includegraphics[width=0.6\textwidth]{daytime.png}
+\end{figure}
+位于\texttt{utcnist.colorado.edu}的日期时间服务器返回了调用时的日期时间。这其中产生的包
+如图~\ref{fig:daytimepacket}所示。
+\begin{figure}[htb]
+	\centering
+	\caption{daytime产生的报文}
+	\label{fig:daytimepacket}
+	\includegraphics[width=0.6\textwidth]{daytimepack.png}
+\end{figure}
+可见这是一个典型的TCP连接、传输、断开的过程。我们的Socket实现正确处理了TCP连接的全过程。
 
 \subsection{TCP和UDP的Echo Server}
 
@@ -1316,6 +1547,25 @@ main(int argc, char *argv[])
 	return 0;
 }
 \end{lstlisting}
+
+在QEMU中的xv6操作系统终端中执行\texttt{tcpecho}命令运行TCP Echo Server，结果如图~\ref{fig:tcpecho}所示。
+\begin{figure}[htb]
+	\centering
+	\caption{TCP Echo Server}
+	\label{fig:tcpecho}
+	\includegraphics[width=0.8\textwidth]{tcpecho.png}
+\end{figure}
+可见，从宿主机终端中运行的\texttt{nc}命令向TCP Echo Server发送了的数据
+都被TCP Echo Server将数据原样返回给客户端。同时TCP Echo Server也将收到的数据打印到了终端中。
+包括数据包的基本信息。由捕捉的数据也可看出这一来往的过程。如图~\ref{fig:tcpechopack}所示。
+\begin{figure}[htb]
+	\centering
+	\caption{TCP Echo Server和宿主机间往来的数据包}
+	\label{fig:tcpechopack}
+	\includegraphics[width=0.8\textwidth]{tcpechopack.png}
+\end{figure}
+
+
 
 \chapter{项目管理}
 
@@ -1446,6 +1696,75 @@ static inline struct netdb_answer *make_query(char *name, int type)
 		}
 	}
 	return query_ans;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[numbers=left,style=CppStyle,caption=Socket API的顶层封装,label={code:sockrecvfrom}]
+int socketrecvfrom(socket_t *skt, char *buf, int len, int flags, struct sockaddr *addr, int *addrlen)
+{
+	if (skt->type == SOCK_STREAM)
+	{
+		if (addr)
+		{
+			return -EISCONN;
+		}
+
+		// as stated in the document, it will have the same effect as recv()
+		return socketrecv(skt, buf, len, flags);
+	}
+
+	if (!skt->opts->recvfrom)
+	{
+		return -ESOCKTNOSUPPORT;
+	}
+
+	skt->recvfrom_params.recv_len = len;
+
+	int err = skt->opts->recvfrom(skt, buf, len, flags, addr, addrlen);
+	if (err)
+	{
+		return err;
+	}
+
+	if (skt->recv_buf == NULL)
+	{
+		acquire(&skt->lock);
+		skt->wakeup_retcode = 0;
+		if (sleepddl(&skt->recv_chan, &skt->lock, skt->recv_timeout) == 0)
+		{
+			release(&skt->lock);
+			return -EWOULDBLOCK;
+		}
+		release(&skt->lock);
+
+		if (skt->wakeup_retcode != 0)
+		{
+			return skt->wakeup_retcode;
+		}
+	}
+
+	netbegin_op();
+
+	len = pbuf_copy_partial(skt->recv_buf, buf, len, skt->recv_offset);
+	skt->recv_offset += len;
+	KDEBUG_ASSERT(skt->recv_offset <= skt->recv_buf->tot_len);
+
+	if (skt->recv_offset == skt->recv_buf->tot_len)
+	{
+		pbuf_free(skt->recv_buf);
+		skt->recv_buf = NULL;
+		skt->recv_offset = 0;
+
+		memmove(addr, &skt->recvfrom_params.recv_addr, sizeof(struct sockaddr_in));
+		*addrlen = sizeof(struct sockaddr_in);
+		addrin_byteswap((struct sockaddr_in *)addr);
+
+		memset(&skt->recvfrom_params, 0, sizeof(skt->recvfrom_params));
+	}
+
+	netend_op();
+
+	return len;
 }
 \end{lstlisting}
 
