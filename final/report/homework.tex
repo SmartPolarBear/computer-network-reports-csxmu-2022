@@ -1711,11 +1711,99 @@ main(int argc, char *argv[])
 	\centering
 	\caption{Git工作流程}
 	\label{fig:gitflow}
-	\includegraphics[width=0.8\textwidth]{git.png}
+	\includegraphics[width=0.6\textwidth]{git.png}
+\end{figure}
+需要对项目贡献代码时，开发者首先fork项目的源代码到自己的Git仓库中，然后在自己的Git仓库中进行开发。
+具体而言，开发者首先从远程仓库中clone项目的源代码到本地，然后在本地进行开发。待完成一定功能后，
+将本地的代码push到自己的Git仓库中。然后在GitHub上发起pull request，请求将自己的代码合并到项目的源代码中。
+
+Git不仅可以进行代码的版本控制，还可以进行代码的合并。因此，它较好地解决了以上提到的协作问题。当
+出现了难以解决的错误，也可以回退到之前的版本。这样，我们就可以有效地进行项目的开发。
+
+\clearpage
+\section{项目数据}
+
+\subsection{代码行数统计}
+
+\begin{figure}[ht]
+	\centering
+	\includegraphics[width=0.5\textwidth]{loc.png}
+	\caption{主要语言的代码行数增量}
+	\label{fig:loc}
+\end{figure}
+ 
+
+使用常用的代码行数统计工具\texttt{cloc}，我们统计了项目的代码行数。如表~\ref{tab:xv6enhanced}所示。
+和表~\ref{tab:xv6}相比，我们的项目代码行数增加了\textbf{10229}行，增加了\textbf{125\%}。
+主要语言的代码行数增量如图~\ref{fig:loc}所示。可见，我们的项目工作量较大，为xv6增加了大量重要的网络功能。
+
+\begin{table}[H]
+	\centering
+	\caption{本项目代码行数}
+	\label{tab:xv6enhanced}
+	\begin{tabular}{c|c|c|c|c}
+		\toprule
+		\hline
+		\textbf{语言} & \textbf{文件} & \textbf{空行} & \textbf{注释} & \textbf{代码} \\
+		\hline
+		C                            &   82        &   1984     &      1083       &   12894\\
+		C/C++ Header                 &   43        &    520     &       492       &    2577\\
+		CMake                        &   35        &    269     &        15       &     977\\
+		XML                          &    5        &      0     &         0       &     913\\
+		Assembly                     &    8        &     60     &       124       &     255\\
+		Bourne Shell                 &    4        &     32     &        24       &     223\\
+		make                         &    1        &     50     &        39       &     207\\
+		Perl                         &    5        &     31     &        33       &     194\\
+		Markdown                     &    1        &     10     &         0       &      64\\
+		Pascal                       &    1        &     24     &        60       &      50\\
+		Python                       &    2        &     18     &         0       &      41\\
+		JSON                         &    1        &      0     &         0       &      12\\
+		Lisp                         &    1        &      0     &         0       &       4\\
+		\hline
+		总计                          & 189         &  2998      &     1870        &  18411 \\
+		\hline
+		\bottomrule
+	\end{tabular}
+\end{table}
+\begin{table}[H]
+	\centering
+	\caption{原始的xv6代码行数}
+	\label{tab:xv6}
+	\begin{tabular}{c|c|c|c|c}
+		\toprule
+		\hline
+		\textbf{语言} & \textbf{文件} & \textbf{空行} & \textbf{注释} & \textbf{代码} \\
+		\hline
+		C                         &      46      &     1029    &        797  &         6455\\
+		C/C++ Header              &      22      &      146    &        136  &          842\\
+		Bourne Shell              &       4      &       32    &         24  &          223\\
+		make                      &       1      &       40    &         33  &          213\\
+		Assembly                  &       7      &       53    &        119  &          201\\
+		Perl                      &       5      &       31    &         33  &          194\\
+		Pascal                    &       1      &       24    &         60  &           50\\
+		Lisp                      &       1      &        0    &          0  &            4\\
+		\hline
+		总计                      &      87       &    1355      &     1202   &        8182\\
+		\hline
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsection{GitHub统计}
+
+GitHub提供了本项目从仓库建立以来的代码提交统计、增删代码量统计，如图~\ref{fig:github}所示。
+\begin{figure}[htb]
+	\centering
+	\includegraphics[width=0.8\textwidth]{gitstatistic.png}
+	\caption{GitHub统计}
+	\label{fig:github}
 \end{figure}
 
-\section{项目数据}
- 
+可见，我们在11月底前完成了几乎全部的工作，并且进行了大量的代码重构，使得代码更加清晰易懂。
+在项目的不同阶段，每位成员都做出了巨大的贡献，尽管工作量不同，但我们都分别克服大量的困难，
+各自解决了很多的问题，共同完成了该xv6操作系统内核网络子系统的实现。对该项目都有不可或缺
+的贡献，共同完成了上述功能。
+
 
 \chapter{项目感想}
 
@@ -1749,7 +1837,8 @@ main(int argc, char *argv[])
 \section{谢哲涵}
 
 在项目中我负责编写httpget程序。在计算机网络的实验课中，我们对使用HTTP连接获取互联网上的内容有了初步的理解和认识
-，而在实现这个命令过程中我对于计算机网络编程，应用层协议有了更加深刻的认识。
+，但是对相关工具的实现原理并没有很多了解。在实现这个命令过程中，我弄懂了如何通过Socket API对HTTP内容进行请求。
+这次项目开发使得我对于计算机网络编程，应用层协议有了更加深刻的认识。
 
 \clearpage
 \addcontentsline{toc}{part}{参考文献}
